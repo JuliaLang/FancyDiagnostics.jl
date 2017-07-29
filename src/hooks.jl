@@ -1,9 +1,12 @@
 module BaseHooks
 
 using CSTParser
+using CSTParser: Diagnostics
 using FancyDiagnostics: display_diagnostic
+using Base: Meta
 
 struct REPLDiagnostic
+    error_code::Diagnostics.ErrorCodes
     fname::AbstractString
     text::AbstractString
     diags::Any
@@ -45,29 +48,51 @@ function Core.include(m::Module, fname::String)
     _include_string(fname, text)
 end
 Base.include_string(m::Module, txt::String, fname::String) = _include_string(filename, code)
+
+function is_incomplete(diag)
+    diag.error_code in (
+        Diagnostics.UnexpectedInputEnd,
+        Diagnostics.UnexpectedStringEnd,
+        Diagnostics.UnexpectedCommentEnd,
+        Diagnostics.UnexpectedBlockEnd,
+        Diagnostics.UnexpectedCmdEnd,
+        Diagnostics.UnexpectedCharEnd)
+end
+
 function Base.parse(str::AbstractString, pos::Int; greedy::Bool=true, raise::Bool=true)
     # Non-greedy mode not yet supported
     @assert greedy
     io = IOBuffer(str)
     seek(io, pos-1)
     ps = CSTParser.ParseState(io)
-    local result = nothing
     result, ps = CSTParser.parse(ps)
     if ps.errored
-        diag = REPLDiagnostic("REPL", str, ps.diagnostics)
+        diag = REPLDiagnostic(ps.error_code, "REPL", str, ps.diagnostics)
         raise && throw(diag)
-        return Expr(:error, diag), position(io) + 1
+        return is_incomplete(diag) ? Expr(:incomplete, diag) : Expr(:error, diag), position(io) + 1
     end
     Expr(result), position(io) + 1
+end
+
+function Base.incomplete_tag(ex::Expr)
+    Meta.isexpr(ex, :incomplete) || return :none
+    (length(ex.args) != 1 || !isa(ex.args[1], REPLDiagnostic)) && return :other
+    ex.args[1].error_code == Diagnostics.UnexpectedStringEnd && return :string
+    ex.args[1].error_code == Diagnostics.UnexpectedCommentEnd && return :comment
+    ex.args[1].error_code == Diagnostics.UnexpectedBlockEnd && return :block
+    ex.args[1].error_code == Diagnostics.UnexpectedCmdEnd && return :cmd
+    ex.args[1].error_code == Diagnostics.UnexpectedCharEnd && return :char
+    return :other
 end
 
 function Base.parse_input_line(code::String; filename::String="none")
     ps = CSTParser.ParseState(code)
     result, ps = CSTParser.parse(ps)
     if ps.errored
-        diag = REPLDiagnostic(filename, code, ps.diagnostics)
-        return Expr(:error, diag)
+        diag = REPLDiagnostic(ps.error_code, filename, code, ps.diagnostics)
+        return is_incomplete(diag) ? Expr(:incomplete, diag) : Expr(:error, diag)
     end
+    result == nothing && return result
     Expr(result)
 end
 

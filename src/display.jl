@@ -17,8 +17,9 @@ function display_diagnostic(io::IO, code, diagnostics::Vector{Diagnostic}; filen
         line = compute_line(file, offset)
         str  = String(file[line])
         lineoffset = offset - file.offsets[line] + 1
-        col  = lineoffset > length(str) ? sum(charwidth, str) + 1 :
-            sum(charwidth, str[1:lineoffset])
+        col  = (lineoffset == 0 || isempty(str)) ? 1 :
+               lineoffset > length(str) ? sum(charwidth, str) + 1 :
+                sum(charwidth, str[1:lineoffset])
         if false #message.severity == :fixit
             print(io, " "^(col-1))
             print_with_color(:green, io, message.text)
