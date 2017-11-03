@@ -69,9 +69,9 @@ function Base.parse(str::AbstractString, pos::Int; greedy::Bool=true, raise::Boo
     if ps.errored
         diag = REPLDiagnostic(ps.error_code, "REPL", str, ps.diagnostics)
         raise && throw(diag)
-        return is_incomplete(diag) ? Expr(:incomplete, diag) : Expr(:error, diag), position(io) + 1
+        return is_incomplete(diag) ? Expr(:incomplete, diag) : Expr(:error, diag), pos + result.fullspan
     end
-    Expr(result), position(io) + 1
+    Expr(result), pos + result.fullspan
 end
 
 function Base.incomplete_tag(ex::Expr)
