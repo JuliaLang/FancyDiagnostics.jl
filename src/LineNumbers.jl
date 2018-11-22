@@ -4,7 +4,7 @@ export SourceFile, compute_line, LineBreaking
 import Base: getindex, setindex!, length
 
 # Offsets are 0 based
-immutable SourceFile
+struct SourceFile
     data::Vector{UInt8}
     offsets::Vector{UInt64}
 end
@@ -21,7 +21,7 @@ function SourceFile(data)
     if !isempty(offsets) && line[end] == '\n'
         push!(offsets, position(buf))
     end
-    SourceFile(data,offsets)
+    SourceFile(Vector{UInt8}(data),offsets)
 end
 
 function compute_line(file::SourceFile, offset)
@@ -46,7 +46,7 @@ Indexing adaptor to map from a flat byte offset to a `[line][offset]` pair.
 Optionally, off may specify a byte offset relative to which the line number and
 offset should be computed
 """
-immutable LineBreaking{T}
+struct LineBreaking{T}
     off::UInt64
     file::SourceFile
     obj::T
