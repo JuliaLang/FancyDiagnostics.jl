@@ -4,10 +4,10 @@ using CSTParser: Error
 
 function display_diagnostic(io::IO, code, diagnostics::Vector{Error}; filename = "none")
     file = SourceFile(code)
-    for message in diagnostics
+    for (i,message) in enumerate(diagnostics)
         if isempty(message.loc)
-            printstyled("ERROR", color=:red, bold=true)
-            println(io, ": ", message.description)
+            i != 1 && (printstyled(io, "ERROR", color=:red, bold=true); print(io, ": "))
+            println(io, message.description)
             continue
         end
         offset = first(message.loc)
@@ -23,8 +23,8 @@ function display_diagnostic(io::IO, code, diagnostics::Vector{Error}; filename =
             println(io)
         else
             print(io, "$filename:$line:$col " )
-            printstyled("ERROR", color=:red, bold=true)
-            println(io, ": ", message.description)
+            i != 1 && (printstyled(io, "ERROR", color=:red, bold=true); print(io, ": "))
+            println(io, message.description)
             println(io, rstrip(str))
             print(io, " "^(col-1))
             printstyled(io, string('^',"~"^(max(0,length(message.loc)-1))); color=:green, bold = true)

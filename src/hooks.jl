@@ -10,14 +10,14 @@ struct REPLDiagnostic
     diags::Any
 end
 
-function Base.showerror(io::IO, d::REPLDiagnostic, bt)
+function Base.showerror(io::IO, d::REPLDiagnostic, bt; backtrace=false)
     printstyled(io, ""; color=:white)
     display_diagnostic(io, d.text, d.diags; filename = d.fname)
 end
 Base.display_error(io::IO, d::REPLDiagnostic, bt) = Base.showerror(io, d, bt)
 
 function Base.showerror(io::IO, d::REPLDiagnostic)
-    print_with_color(io, "", color=:white)
+    printstyled(io, ""; color=:white)
     display_diagnostic(io, d.text, d.diags; filename = d.fname)
 end
 
