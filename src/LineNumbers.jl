@@ -1,46 +1,69 @@
-module LineNumbers
-
-export SourceFile, compute_line, LineBreaking
-import Base: getindex, setindex!, length
-
-# Offsets are 0 based
 struct SourceFile
     data::Vector{UInt8}
+    filename::String
+end
+
+SourceFile(code::Vector{UInt8}, filename) = SourceFile(code, filename)
+SourceFile(code::AbstractString, filename) = SourceFile(Vector{UInt8}(String(code)), filename)
+
+SourceFile(;     filename="none") = SourceFile(read(filename), filename)
+SourceFile(code; filename="none") = SourceFile(code, filename)
+
+function Base.show(io::IO, file::SourceFile)
+    preview = readline(IOBuffer(file.data), keep=true)
+    print(io, "SourceFile($(repr(string(preview, "…"))); filename=$(repr(file.filename)))")
+end
+
+struct IndexedSource <: AbstractVector{String}
+    file::SourceFile
+    # offsets contains the (zero-based) byte offset for the character at the
+    # start of each line. One additional offset is included past the end of the
+    # file.
     offsets::Vector{UInt64}
 end
-length(file::SourceFile) = length(file.offsets)
 
-function SourceFile(data)
+function IndexedSource(file::SourceFile)
+    buf = IOBuffer(file.data)
     offsets = UInt64[0]
-    buf = IOBuffer(data)
-    local line
-    while !eof(buf)
-        line = readuntil(buf,'\n')
-        !eof(buf) && push!(offsets, position(buf))
-    end
-    if !isempty(offsets) && line[end] == '\n'
+    while true
+        line = readuntil(buf, '\n', keep=true)
         push!(offsets, position(buf))
+        if eof(buf)
+            if !endswith(line, '\n')
+                offsets[end] += 1
+            end
+            break
+        end
     end
-    SourceFile(Vector{UInt8}(data),offsets)
+    IndexedSource(file, offsets)
 end
 
-function compute_line(file::SourceFile, offset)
-    ind = searchsortedfirst(file.offsets, offset)
-    ind <= length(file.offsets) && file.offsets[ind] == offset ? ind : ind - 1
-end
-
-function getindex(file::SourceFile, line::Int)
-    if line == length(file.offsets)
-        return file.data[(file.offsets[end]+1):end]
-    else
-        # - 1 to skip the '\n'
-        return file.data[(file.offsets[line]+1):(file.offsets[line+1]-1)]
+function source_location(src::IndexedSource, offset)
+    line = searchsortedlast(src.offsets, offset)
+    if line == length(src.offsets)
+        offset = length(src.file.data) - 1
+        line -= 1
     end
+    partial_line = String(src.file.data[src.offsets[line]+1:offset+1])
+    col = textwidth(partial_line)
+    (line,col)
 end
-getindex(file::SourceFile, arr::AbstractArray) = [file[x] for x in arr]
 
-# LineBreaking
+function Base.summary(io::IO, src::IndexedSource)
+    print(io, "IndexedSource for $(repr(src.file.filename)) with $(length(src)) lines")
+end
 
+Base.size(src::IndexedSource) = (length(src.offsets)-1,)
+
+function Base.getindex(src::IndexedSource, line::Int)
+    i1 = src.offsets[line] + 1    # Offsets are zero-based
+    i2 = src.offsets[line+1] - 1  # NB: skip '\n'
+    return String(src.file.data[i1:i2])
+end
+
+
+#-------------------------------------------------------------------------------
+#=
 """
 Indexing adaptor to map from a flat byte offset to a `[line][offset]` pair.
 Optionally, off may specify a byte offset relative to which the line number and
@@ -63,19 +86,19 @@ function indtransform(lb::LineBreaking, x::Int)
     (line - offline + 1), off
 end
 
-function getindex(lb::LineBreaking, x::Int)
+function Base.getindex(lb::LineBreaking, x::Int)
     l, o = indtransform(lb, x)
     lb.obj[l][o]
 end
 
-function setindex!(lb::LineBreaking, y, x::Int)
+function Base.setindex!(lb::LineBreaking, y, x::Int)
     l, o = indtransform(lb, x)
     lb.obj[l][o] = y
 end
-function setindex!(lb::LineBreaking, y, x::AbstractArray)
+function Base.setindex!(lb::LineBreaking, y, x::AbstractArray)
     for i in x
         lb[i] = y
     end
 end
+=#
 
-end # module

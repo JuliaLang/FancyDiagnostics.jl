@@ -1,8 +1,21 @@
-using .LineNumbers: SourceFile, compute_line
-using CSTParser
-using CSTParser: Error
+struct REPLDiagnostic
+    fname::AbstractString
+    text::AbstractString
+    diags::Any
+end
 
-function display_diagnostic(io::IO, code, diagnostics::Vector{Error}; filename = "none")
+function Base.showerror(io::IO, d::REPLDiagnostic, bt; backtrace=false)
+    printstyled(io, ""; color=:white)
+    display_diagnostic(io, d.text, d.diags; filename = d.fname)
+end
+Base.display_error(io::IO, d::REPLDiagnostic, bt) = Base.showerror(io, d, bt)
+
+function Base.showerror(io::IO, d::REPLDiagnostic)
+    printstyled(io, ""; color=:white)
+    display_diagnostic(io, d.text, d.diags; filename = d.fname)
+end
+
+function display_diagnostic(io::IO, code, diagnostics; filename = "none")
     file = SourceFile(code)
     for (i,message) in enumerate(diagnostics)
         if isempty(message.loc)
@@ -32,3 +45,4 @@ function display_diagnostic(io::IO, code, diagnostics::Vector{Error}; filename =
         end
     end
 end
+
