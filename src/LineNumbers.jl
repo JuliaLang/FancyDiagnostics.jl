@@ -38,14 +38,22 @@ function IndexedSource(file::SourceFile)
     IndexedSource(file, offsets)
 end
 
-function source_location(src::IndexedSource, offset)
+function source_location(src::IndexedSource, offset; prevchar=false)
     line = searchsortedlast(src.offsets, offset)
     if line == length(src.offsets)
-        offset = length(src.file.data) - 1
-        line -= 1
+        partial_line = ""
+    else
+        partial_line = String(src.file.data[src.offsets[line]+1:offset+1])
     end
-    partial_line = String(src.file.data[src.offsets[line]+1:offset+1])
     col = textwidth(partial_line)
+    if prevchar
+        if isempty(partial_line)
+            line -= 1
+            col = textwidth(src[line])
+        else
+            col -= textwidth(last(partial_line))
+        end
+    end
     (line,col)
 end
 
@@ -56,6 +64,11 @@ end
 Base.size(src::IndexedSource) = (length(src.offsets)-1,)
 
 function Base.getindex(src::IndexedSource, line::Int)
+    if line == length(src.offsets)
+        # Allow line-off-the-end as error may occur at EOF
+        # TODO: Is there a neater way?
+        return ""
+    end
     i1 = src.offsets[line] + 1    # Offsets are zero-based
     i2 = src.offsets[line+1] - 1  # NB: skip '\n'
     return String(src.file.data[i1:i2])
