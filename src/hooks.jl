@@ -19,23 +19,8 @@ function Base.showerror(io::IO, err::CSTParseError)
     display_diagnostic(io, err)
 end
 
-# Determine whether an ErrorToken occurs in EXPR.
-#
-# NB: ParseState `errored` can be false while `has_error` is true. Maybe
-# `errored` is set only when the parser hits an error it considers locally
-# "non-recoverable" ???
-function has_error(cst::EXPR)
-    if typof(cst) == CSTParser.ErrorToken
-        return true
-    elseif isnothing(cst.args)
-        return false
-    else
-        return any(has_error, cst.args)
-    end
-end
-
 function to_Expr(cst, src, offset)
-    if has_error(cst)
+    if CSTParser.has_error(cst)
         # Remove cst.parent ?
         Expr(:error, CSTParseError(cst, src, offset))
     else
@@ -54,7 +39,7 @@ function cst_parse(src::SourceFile, offset; rule::Symbol=:statement, options...)
     ps = CSTParser.ParseState(buf)
     cst,ps = CSTParser.parse(ps, rule == :all)
     # Convert to Expr
-    if has_error(cst)
+    if CSTParser.has_error(ps)
         # Ugh: src.data is `unsafe_wrap`d => deepcopy
         src = deepcopy(src)
     end
