@@ -39,11 +39,6 @@ function cst_parse(src::SourceFile, offset; rule::Symbol=:statement, options...)
     ps = CSTParser.ParseState(buf)
     cst,ps = CSTParser.parse(ps, rule == :all)
     # Convert to Expr
-    if CSTParser.has_error(ps)
-        # Ugh: src.data is `unsafe_wrap`d => deepcopy
-        src = deepcopy(src)
-    end
-    srccopy = nothing
     if typof(cst) == CSTParser.FileH
         args = Any[]
         for a in cst.args
@@ -58,46 +53,37 @@ function cst_parse(src::SourceFile, offset; rule::Symbol=:statement, options...)
     return ex, offset
 end
 
-function fl_parse(text, text_len, filename, filename_len, offset, rule)
-    @ccall jl_fl_parse(text::Ptr{UInt8}, sizeof(text)::Csize_t,
-                       filename::Ptr{UInt8}, sizeof(filename)::Csize_t,
-                       offset::Csize_t, rule::Any)::Any
-end
-
 # Extra shim for sanity during development
-function _julia_jl_parse(text, text_len, filename, filename_len, offset, options)
-    # flisp parser uses single rule Symbol as options
-    opts = options isa Symbol ? (rule=options,) : options
+function julia_parse(text, filename, offset, options)
+    if options == :atom
+        # TODO!
+        return Core.Compiler.fl_parse(text, filename, offset, options)
+    end
     try
-        if opts.rule == :atom
-            # TODO!
-            return fl_parse(text, text_len, filename, filename_len, offset, opts.rule)
+        if text isa Core.SimpleVector # May be passed in from C entry points
+            (ptr,len) = text
+            text = String(unsafe_wrap(Array, ptr, len))
         end
-        src = SourceFile(unsafe_wrap(Array, text, text_len),
-                         filename=unsafe_string(filename, filename_len))
-        ex, pos = cst_parse(src, offset; opts...)
-        # Rewrap in an svec for use by the C code
+        src = SourceFile(text, filename=filename)
+        ex, pos = cst_parse(src, offset; rule=options)
+        # Rewrap result in an svec for use by the C code
         return Core.svec(ex, pos)
     catch exc
         @error("Calling CSTParser failed — disabling!",
                exception=(exc,catch_backtrace()),
                offset=offset,
-               code=String(unsafe_wrap(Array, text, text_len))
-        )
+               code=text)
         panic!()
     end
-    return fl_parse(text, text_len, filename, filename_len, offset, opts.rule)
+    return Core.Compiler.fl_parse(text, filename, offset, options)
 end
 
 function init!()
-    # Debug hack - FIXME don't use @eval here!
-    parser = @eval @cfunction(_julia_jl_parse, Any,
-                              (Ptr{UInt8}, Csize_t, Ptr{UInt8}, Csize_t, Csize_t, Any))
-    @ccall jl_set_parser(parser::Ptr{Cvoid})::Cvoid
+    Core.Compiler.set_parser(julia_parse)
 end
 
 function panic!()
-    @ccall jl_set_parser(cglobal(:jl_fl_parse)::Ptr{Cvoid})::Cvoid
+    Core.Compiler.set_parser(Core.Compiler.fl_parse)
 end
 
 #=
