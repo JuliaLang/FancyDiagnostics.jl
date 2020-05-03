@@ -19,6 +19,12 @@ function _first_error(ex, trace, pos)
     return nothing
 end
 
+function print_underlined(io::IO, args...; kwargs...)
+    printstyled(io, sprint(io->printstyled(io, args...; kwargs...), context=io), color=:underline)
+end
+
+print_underlined(args...; kwargs...) = print_underlined(stdout, args...; kwargs...)
+
 function make_underline(width,
                         #chars=('^','~','^','|')
                         chars=('▔','▔','▔','▎')
@@ -34,9 +40,19 @@ function make_underline(width,
 end
 
 function explain_error(ex)
-    # FIXME: Framework for explaining parse errors
-    errcode = CSTParser.errorof(ex)
+    errcode = errorof(ex)
     if errcode == CSTParser.UnexpectedToken
+        #=
+        # FIXME: how is the encoded?
+        expected_kind = kindof(ex.args[1])
+        expectedstr = expected_kind == Tokens.LPAREN  ? "(" :
+                      expected_kind == Tokens.RPAREN  ? ")" :
+                      expected_kind == Tokens.LSQUARE ? "[" :
+                      expected_kind == Tokens.RSQUARE ? "]" :
+                      expected_kind == Tokens.COMMA   ? "," :
+                      string(expected_kind)
+        "Expected $(repr(expectedstr))"
+        =#
         "Unexpected token"
     elseif errcode == CSTParser.CannotJuxtapose
         "Cannot juxtapose"
@@ -67,26 +83,78 @@ end
 
 # TODO: line numbers + terminal links in message!!
 
+function print_src_lines(printfunc::Function, io::IO, src, indexed, rng)
+    if first(rng) >= last(rng)
+        return
+    end
+    text = src[rng]
+    first_line = source_line(indexed, first(rng))
+    textlines = split(text, '\n')
+    for (i,linetext) in enumerate(textlines)
+        if i > 1 || first(rng) == line_start_offset(indexed, first(rng))
+            # TODO: terminal hyperlinks in line numbers!!
+            #printstyled(io, lpad(first_line+i-1, 3), color=:underline)
+            print(io, lpad(first_line+i-1, 3), "│")
+        end
+        printfunc(io, linetext)
+        if i < length(textlines) || last(rng) == line_end_offset(indexed, last(rng))
+            println(io)
+        end
+    end
+end
+print_src_lines(io::IO, src, indexed, rng) = print_src_lines(print, io, src, indexed, rng)
+
 function display_diagnostic(io, src, ex0, offset0; ctxlines=3)
     trace = first_error(ex0, offset0)
-    ex,offset = trace[end]
+    if errorof(first(trace[end])) == CSTParser.UnexpectedToken && length(trace) > 1
+        ex,offset = trace[end-1]
+    else
+        ex,offset = trace[end]
+    end
     indexed = IndexedSource(src)
+
     line,col = source_location(indexed, offset)
     println(io, "Parsing failed at $(src.filename):$line:$col")
-    for ln = max(1,line-ctxlines):max(0,line-1)
-        println(io, rstrip(indexed[ln]))
+
+    bad_off1 = offset
+    bad_off2 = offset+ex.span
+
+    toplevel_ctx = line_start_offset(indexed, offset0, 0):line_end_offset(indexed, offset0, ctxlines)
+
+    prefix_ctx = line_start_offset(indexed, bad_off1, -ctxlines):bad_off1
+
+    # Show toplevel context
+    if source_line(indexed, last(toplevel_ctx)) + 1 < source_line(indexed, first(prefix_ctx))
+        topline = source_line(indexed, first(toplevel_ctx))
+        println(io, "In top-level expression at $(src.filename):$topline")
+        print_src_lines(io, src, indexed, toplevel_ctx)
+        println("...")
+    else
+        prefix_ctx = first(toplevel_ctx):last(prefix_ctx)
     end
-    endline,endcol = source_location(indexed, offset + ex.span, prevchar=true)
-    endcol2 = endline == line ? endcol : textwidth(indexed[line])
-    println(io, rstrip(indexed[line]))
-    print(io, ' '^max(0,col-1))
-    printstyled(io, make_underline(endcol2-col+1); color=:green, bold = true)
+
+    # Show prefix lines
+    print_src_lines(io, src, indexed, prefix_ctx)
+
+    # Format Bad lines
+    bad_rng = bad_off1:bad_off2
+    if first(bad_rng) == last(bad_rng)
+        # Show empty char! Which char should we use here? '□' is nice but
+        # probably not portable
+        printstyled(io, '▄', color=:red, bold=true)
+    else
+        print_src_lines(io, src, indexed, bad_rng) do io,linetext
+            print_underlined(io, linetext, color=:red, bold=true)
+        end
+    end
+
+    # Suffix
+    suffix_ctx = bad_off2:line_end_offset(indexed, bad_off2, ctxlines)
+    print_src_lines(io, src, indexed, suffix_ctx)
+
     println(io)
-    printstyled(io, string(explain_error(ex), "\n"); color=:red)
-    println(io)
-    # DEBUG: Dump node
-    #e2 = deepcopy(ex)
-    #e2.parent=nothing
-    #dump(e2)
+
+    # For now, explaining errors doesn't work very well...
+    printstyled(io, string(explain_error(first(trace[end])), "\n"); color=:red)
 end
 

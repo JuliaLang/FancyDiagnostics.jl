@@ -1,6 +1,6 @@
 struct CSTParseError <: Exception
     cst::EXPR
-    src::SourceFile
+    src::SourceText
     offset::UInt64
 end
 
@@ -28,7 +28,7 @@ function to_Expr(cst, src, offset)
     end
 end
 
-function cst_parse(src::SourceFile, offset; rule::Symbol=:statement, options...)
+function cst_parse(src::SourceText, offset; rule::Symbol=:statement, options...)
     # Options other than `rule` ignored for now...
     if rule ∉ (:atom,:statement,:all)
         error("Unknown parser rule: $rule")
@@ -42,7 +42,11 @@ function cst_parse(src::SourceFile, offset; rule::Symbol=:statement, options...)
     if typof(cst) == CSTParser.FileH
         args = Any[]
         for a in cst.args
-            push!(args, to_Expr(a, src, offset))
+            e = to_Expr(a, src, offset)
+            push!(args, e)
+            if e isa Expr && e.head == :toplevel
+                break
+            end
             offset += a.fullspan
         end
         ex = Expr(:toplevel, args...)
@@ -64,7 +68,7 @@ function julia_parse(text, filename, offset, options)
             (ptr,len) = text
             text = String(unsafe_wrap(Array, ptr, len))
         end
-        src = SourceFile(text, filename=filename)
+        src = SourceText(text, filename=filename)
         ex, pos = cst_parse(src, offset; rule=options)
         # Rewrap result in an svec for use by the C code
         return Core.svec(ex, pos)
