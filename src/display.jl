@@ -75,7 +75,9 @@ function explain_error(ex)
     elseif errcode == CSTParser.TooLongChar
         "Character too long"
     elseif errcode == CSTParser.Unknown
-        "Unknown error!"
+        "Parsing error"
+    elseif isnothing(errcode)
+        "Parsing error"
     else
         "Unknown error code ($errcode)"
     end
@@ -83,45 +85,43 @@ end
 
 # TODO: line numbers + terminal links in message!!
 
-function print_src_lines(printfunc::Function, io::IO, src, indexed, rng)
-    if first(rng) >= last(rng)
+function print_src_lines(printfunc::Function, io::IO, src, indexed, range)
+    if isempty(range)
         return
     end
-    text = src[rng]
-    first_line = source_line(indexed, first(rng))
-    textlines = split(text, '\n')
-    for (i,linetext) in enumerate(textlines)
-        if i > 1 || first(rng) == line_start_offset(indexed, first(rng))
-            # TODO: terminal hyperlinks in line numbers!!
+    line_ranges = intersect_lines(indexed, range)
+    for (i,linerange) in enumerate(line_ranges)
+        if i > 1 || first(linerange) == line_start(indexed, first(linerange))
+            # TODO: terminal hyperlinks in line numbers ?
             #printstyled(io, lpad(first_line+i-1, 3), color=:underline)
-            print(io, lpad(first_line+i-1, 3), "│")
+            srcline = source_line(indexed, first(linerange))
+            print(io, lpad(srcline, 3), "│")
         end
-        printfunc(io, linetext)
-        if i < length(textlines) || last(rng) == line_end_offset(indexed, last(rng))
+        printfunc(io, rstrip(src[linerange], '\n'))
+        if i < length(line_ranges) || last(range) == line_end(indexed, last(range))
             println(io)
         end
     end
 end
 print_src_lines(io::IO, src, indexed, rng) = print_src_lines(print, io, src, indexed, rng)
 
-function display_diagnostic(io, src, ex0, offset0; ctxlines=3)
-    trace = first_error(ex0, offset0)
+function display_diagnostic(io, src, ex0, index0; ctxlines=3)
+    trace = first_error(ex0, index0)
     if errorof(first(trace[end])) == CSTParser.UnexpectedToken && length(trace) > 1
-        ex,offset = trace[end-1]
+        ex,index = trace[end-1]
     else
-        ex,offset = trace[end]
+        ex,index = trace[end]
     end
     indexed = IndexedSource(src)
 
-    line,col = source_location(indexed, offset)
+    line,col = source_location(indexed, index)
     println(io, "Parsing failed at $(src.filename):$line:$col")
 
-    bad_off1 = offset
-    bad_off2 = offset+ex.span
+    bad_rng = index:index+ex.span-1
 
-    toplevel_ctx = line_start_offset(indexed, offset0, 0):line_end_offset(indexed, offset0, ctxlines)
+    toplevel_ctx = line_start(indexed, index0, 0):line_end(indexed, index0, ctxlines)
 
-    prefix_ctx = line_start_offset(indexed, bad_off1, -ctxlines):bad_off1
+    prefix_ctx = line_start(indexed, first(bad_rng), -ctxlines):first(bad_rng)-1
 
     # Show toplevel context
     if source_line(indexed, last(toplevel_ctx)) + 1 < source_line(indexed, first(prefix_ctx))
@@ -130,15 +130,14 @@ function display_diagnostic(io, src, ex0, offset0; ctxlines=3)
         print_src_lines(io, src, indexed, toplevel_ctx)
         println("...")
     else
-        prefix_ctx = first(toplevel_ctx):last(prefix_ctx)
+        prefix_ctx = min(first(toplevel_ctx),first(prefix_ctx)):last(prefix_ctx)
     end
 
     # Show prefix lines
     print_src_lines(io, src, indexed, prefix_ctx)
 
     # Format Bad lines
-    bad_rng = bad_off1:bad_off2
-    if first(bad_rng) == last(bad_rng)
+    if isempty(bad_rng)
         # Show empty char! Which char should we use here? '□' is nice but
         # probably not portable
         printstyled(io, '▄', color=:red, bold=true)
@@ -149,12 +148,11 @@ function display_diagnostic(io, src, ex0, offset0; ctxlines=3)
     end
 
     # Suffix
-    suffix_ctx = bad_off2:line_end_offset(indexed, bad_off2, ctxlines)
+    suffix_start = last(bad_rng)+1
+    suffix_ctx = suffix_start:line_end(indexed, suffix_start, ctxlines)
     print_src_lines(io, src, indexed, suffix_ctx)
 
-    println(io)
-
     # For now, explaining errors doesn't work very well...
-    printstyled(io, string(explain_error(first(trace[end])), "\n"); color=:red)
+    printstyled(io, explain_error(first(trace[end])); color=:red)
 end
 
