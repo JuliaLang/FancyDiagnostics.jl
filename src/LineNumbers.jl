@@ -1,81 +1,111 @@
-module LineNumbers
+"""
+    SourceText(code; filename="none")
 
-export SourceFile, compute_line, LineBreaking
-import Base: getindex, setindex!, length
-
-# Offsets are 0 based
-struct SourceFile
+Source code in textural form
+"""
+struct SourceText # TODO: Make this an AbstractString?
     data::Vector{UInt8}
-    offsets::Vector{UInt64}
+    filename::String
 end
-length(file::SourceFile) = length(file.offsets)
 
-function SourceFile(data)
-    offsets = UInt64[0]
-    buf = IOBuffer(data)
-    local line
+SourceText(code::Vector{UInt8}, filename) = SourceText(code, filename)
+SourceText(code::AbstractString, filename) = SourceText(Vector{UInt8}(String(code)), filename)
+
+SourceText(;     filename="none") = SourceText(read(filename), filename)
+SourceText(code; filename="none") = SourceText(code, filename)
+
+function Base.show(io::IO, text::SourceText)
+    buf = IOBuffer(text.data)
+    println(io, "SourceText(\"\"\"")
+    for i = 1:20
+        print(io, readline(buf, keep=true))
+    end
+    if !eof(buf)
+        println(io, "…")
+    end
+    print(io, "\"\"\"; filename=$(repr(text.filename)))")
+end
+
+Base.getindex(text::SourceText, r::AbstractUnitRange) = String(text.data[r])
+
+"""
+    IndexedSource(text::SourceText)
+
+Source text carrying an index for the start of each line.
+"""
+struct IndexedSource <: AbstractVector{String}
+    text::SourceText
+    # The byte index for the character at the start of each line.
+    line_starts::Vector{Int}
+end
+
+function IndexedSource(text::SourceText)
+    buf = IOBuffer(text.data)
+    line_starts = Int[1]
     while !eof(buf)
-        line = readuntil(buf,'\n')
-        !eof(buf) && push!(offsets, position(buf))
+        line = readuntil(buf, '\n', keep=true)
+        push!(line_starts, position(buf)+1)
     end
-    if !isempty(offsets) && line[end] == '\n'
-        push!(offsets, position(buf))
-    end
-    SourceFile(Vector{UInt8}(data),offsets)
+    IndexedSource(text, line_starts)
 end
 
-function compute_line(file::SourceFile, offset)
-    ind = searchsortedfirst(file.offsets, offset)
-    ind <= length(file.offsets) && file.offsets[ind] == offset ? ind : ind - 1
+function line_start(src::IndexedSource, index, delta_lines=0)
+    if length(src.line_starts) == 1
+        return 0
+    end
+    line = searchsortedlast(src.line_starts, index)
+    src.line_starts[clamp(line + delta_lines, 1, length(src.line_starts))]
 end
 
-function getindex(file::SourceFile, line::Int)
-    if line == length(file.offsets)
-        return file.data[(file.offsets[end]+1):end]
+function line_end(src::IndexedSource, index, delta_lines=0)
+    if length(src.line_starts) == 1
+        return 0
+    end
+    line = searchsortedlast(src.line_starts, index)
+    src.line_starts[clamp(line + 1 + delta_lines, 1, length(src.line_starts))]-1
+end
+
+function source_location(src::IndexedSource, index)
+    if length(src.line_starts) == 1
+        # Zero lines
+        return (1,1)
+    end
+    line = searchsortedlast(src.line_starts, index)
+    if line == length(src.line_starts)
+        line -= 1
+        partial_line = src[line]
     else
-        # - 1 to skip the '\n'
-        return file.data[(file.offsets[line]+1):(file.offsets[line+1]-1)]
+        partial_line = String(src.text.data[src.line_starts[line]:index])
     end
-end
-getindex(file::SourceFile, arr::AbstractArray) = [file[x] for x in arr]
-
-# LineBreaking
-
-"""
-Indexing adaptor to map from a flat byte offset to a `[line][offset]` pair.
-Optionally, off may specify a byte offset relative to which the line number and
-offset should be computed
-"""
-struct LineBreaking{T}
-    off::UInt64
-    file::SourceFile
-    obj::T
+    col = textwidth(partial_line)
+    (line,col)
 end
 
-function indtransform(lb::LineBreaking, x::Int)
-    offline = compute_line(lb.file, lb.off)
-    line = compute_line(lb.file, x)
-    lineoffset = lb.file.offsets[line]
-    off = x - lineoffset + 1
-    if lineoffset < lb.off
-        off -= lb.off - lineoffset
+function source_line(src::IndexedSource, index)
+    first(source_location(src, index))
+end
+
+function Base.summary(io::IO, src::IndexedSource)
+    print(io, "IndexedSource for $(repr(src.text.filename)) with $(length(src)) lines")
+end
+
+function intersect_lines(src::IndexedSource, rng::AbstractUnitRange)
+    lines = source_line(src, first(rng)):source_line(src, last(rng))
+    line_start_inds = src.line_starts[lines]
+    line_end_inds = src.line_starts[lines .+ 1] .- 1
+    [intersect(rng, s:e) for (s,e) in zip(line_start_inds, line_end_inds)]
+end
+
+Base.size(src::IndexedSource) = (length(src.line_starts)-1,)
+
+function Base.getindex(src::IndexedSource, line::Int)
+    if line == length(src.line_starts)
+        # Allow line-off-the-end as error may occur at EOF
+        # TODO: Is there a neater way?
+        return ""
     end
-    (line - offline + 1), off
+    i1 = src.line_starts[line]
+    i2 = src.line_starts[line+1] - 1
+    return String(src.text.data[i1:i2])
 end
 
-function getindex(lb::LineBreaking, x::Int)
-    l, o = indtransform(lb, x)
-    lb.obj[l][o]
-end
-
-function setindex!(lb::LineBreaking, y, x::Int)
-    l, o = indtransform(lb, x)
-    lb.obj[l][o] = y
-end
-function setindex!(lb::LineBreaking, y, x::AbstractArray)
-    for i in x
-        lb[i] = y
-    end
-end
-
-end # module

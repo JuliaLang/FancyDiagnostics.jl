@@ -1,0 +1,12 @@
+name = "FancyDiagnostics"
+uuid = "29b9fc01-2d52-5901-8357-88823a8aad60"
+version = "0.2.0"
+
+[deps]
+CSTParser = "00ebfdb7-1f24-5e51-bd34-a7502290713f"
+Tokenize = "0796e94c-ce3b-5d07-9a54-7f471281c624"
+
+[compat]
+CSTParser = "2.2"
+Tokenize = "0.5"
+julia = "1"

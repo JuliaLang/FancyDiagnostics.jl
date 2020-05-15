@@ -1,96 +1,90 @@
-module BaseHooks
-
-using CSTParser
-using FancyDiagnostics: display_diagnostic
-using Base: Meta
-
-struct REPLDiagnostic
-    fname::AbstractString
-    text::AbstractString
-    diags::Any
+struct CSTParseError <: Exception
+    cst::EXPR
+    src::SourceText
+    index::UInt64
 end
 
-function Base.showerror(io::IO, d::REPLDiagnostic, bt; backtrace=false)
-    printstyled(io, ""; color=:white)
-    display_diagnostic(io, d.text, d.diags; filename = d.fname)
-end
-Base.display_error(io::IO, d::REPLDiagnostic, bt) = Base.showerror(io, d, bt)
-
-function Base.showerror(io::IO, d::REPLDiagnostic)
-    printstyled(io, ""; color=:white)
-    display_diagnostic(io, d.text, d.diags; filename = d.fname)
+function display_diagnostic(io, err::CSTParseError)
+    display_diagnostic(io, err.src, err.cst, err.index)
 end
 
-function _include_string(m::Module, fname, text)
-    ps = CSTParser.ParseState(text)
-    local result = nothing
-    while !ps.done && isempty(ps.errors)
-        result, ps = Parser.parse(ps)
-        if !isempty(ps.errors)
-            throw(REPLDiagnostic(fname, text, ps.errors))
+function Base.showerror(io::IO, err::CSTParseError, bt; backtrace=false)
+    display_diagnostic(io, err)
+end
+Base.display_error(io::IO, err::CSTParseError, bt) = Base.showerror(io, err, bt)
+
+function Base.showerror(io::IO, err::CSTParseError)
+    display_diagnostic(io, err)
+end
+
+function to_Expr(cst, src, offset)
+    if CSTParser.has_error(cst)
+        # Remove cst.parent ?
+        Expr(:error, CSTParseError(cst, src, offset+1))
+    else
+        CSTParser.to_Expr(CSTParser.EXPRIndexer(cst, String(copy(src.data)), src.filename))
+    end
+end
+
+function cst_parse(src::SourceText, offset; rule::Symbol=:statement)
+    if rule ∉ (:atom,:statement,:all)
+        error("Unknown parser rule: $rule")
+    end
+    # Parse
+    buf = IOBuffer(src.data)
+    seek(buf, offset)
+    ps = CSTParser.ParseState(buf)
+    cst,ps = CSTParser.parse(ps, rule == :all)
+    # Convert to Expr
+    if typof(cst) == CSTParser.FileH
+        args = Any[]
+        for a in cst.args
+            e = to_Expr(a, src, offset)
+            push!(args, e)
+            if e isa Expr && e.head == :toplevel
+                break
+            end
+            offset += a.fullspan
         end
-        result = ccall(:jl_toplevel_eval, Any, (Any, Any), m, Expr(result))
+        ex = Expr(:toplevel, args...)
+    else
+        ex = to_Expr(cst, src, offset)
+        offset += cst.fullspan
     end
-    result
+    return ex, offset
 end
 
-# Pirate base definitions
-# mute override warnings
-if ccall(:jl_generating_output, Cint, ()) == 0
-    ORIG_STDERR = STDERR
-    redirect_stderr()
-end
-
-function Core.include(m::Module, fname::String)
-    text = open(readstring, fname)
-    _include_string(fname, text)
-end
-Base.include_string(m::Module, txt::String, fname::String) = _include_string(filename, code)
-
-function is_incomplete(diag)
-    return false
-end
-
-function Base.Meta.parse(str::AbstractString, pos::Int; greedy::Bool=true, raise::Bool=true, depwarn::Bool=true)
-    # Non-greedy mode not yet supported
-    @assert greedy
-    io = IOBuffer(str)
-    seek(io, pos-1)
-    ps = CSTParser.ParseState(io)
-    result, ps = CSTParser.parse(ps)
-    if !isempty(ps.errors)
-        diag = REPLDiagnostic("REPL", str, ps.errors)
-        raise && throw(diag)
-        return is_incomplete(diag) ? Expr(:incomplete, diag) : Expr(:error, diag), pos + result.fullspan
+# Extra shim for sanity during development
+function julia_parse(text, filename, offset, options)
+    if options == :atom
+        # TODO!
+        return Core.Compiler.fl_parse(text, filename, offset, options)
     end
-    Expr(result), pos + result.fullspan
-end
-
-function Base.incomplete_tag(ex::Expr)
-    Meta.isexpr(ex, :incomplete) || return :none
-    (length(ex.args) != 1 || !isa(ex.args[1], REPLDiagnostic)) && return :other
-    ex.args[1].error_code == Diagnostics.UnexpectedStringEnd && return :string
-    ex.args[1].error_code == Diagnostics.UnexpectedCommentEnd && return :comment
-    ex.args[1].error_code == Diagnostics.UnexpectedBlockEnd && return :block
-    ex.args[1].error_code == Diagnostics.UnexpectedCmdEnd && return :cmd
-    ex.args[1].error_code == Diagnostics.UnexpectedCharEnd && return :char
-    return :other
-end
-
-function Base.parse_input_line(code::String; filename::String="none", depwarn=true)
-    ps = CSTParser.ParseState(code)
-    result, ps = CSTParser.parse(ps)
-    if !isempty(ps.errors)
-        diag = REPLDiagnostic(filename, code, ps.errors)
-        return is_incomplete(diag) ? Expr(:incomplete, diag) : Expr(:error, diag)
+    try
+        if text isa Core.SimpleVector # May be passed in from C entry points
+            (ptr,len) = text
+            text = String(unsafe_wrap(Array, ptr, len))
+        end
+        src = SourceText(text, filename=filename)
+        ex, pos = cst_parse(src, offset; rule=options)
+        # Rewrap result in an svec for use by the C code
+        return Core.svec(ex, pos)
+    catch exc
+        @error("Calling CSTParser failed — disabling!",
+               exception=(exc,catch_backtrace()),
+               offset=offset,
+               code=text)
+        panic!()
     end
-    result == nothing && return result
-    Expr(result)
+    return Core.Compiler.fl_parse(text, filename, offset, options)
 end
 
-if ccall(:jl_generating_output, Cint, ()) == 0
-    REDIRECTED_STDERR = STDERR
-    redirect_stderr(ORIG_STDERR)
+function enable!()
+    Core.eval(Core, :(_parse = $julia_parse))
+    nothing
 end
 
+function disable!()
+    Core.eval(Core, :(_parse = Core.Compiler.fl_parse))
+    nothing
 end
